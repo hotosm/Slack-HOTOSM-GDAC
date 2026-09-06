@@ -678,5 +678,15 @@
     "todate": "2026-09-01T14:00:00",
     "datemodified": "2026-09-02T03:22:12",
     "posted_at": "2026-09-02"
+  },
+  {
+    "event_id": "1000148",
+    "alert_level": "Orange",
+    "event_name": "Eruption  Krakatau",
+    "country": "Indonesia",
+    "fromdate": "2026-09-04T21:00:00",
+    "todate": "2026-09-04T21:00:00",
+    "datemodified": "2026-09-05T17:04:21",
+    "posted_at": "2026-09-06"
   }
 ]
