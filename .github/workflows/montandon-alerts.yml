@@ -1,15 +1,8 @@
 name: Montandon Disaster Alerts
 
-# Montandon merges GDACS, PDC, USGS, GLIDE, EM-DAT and IDMC behind one STAC API,
-# so this is intended to eventually replace the GDACS step in gdacs-alerts.yml.
-# Until then it runs in preview: DRY_RUN defaults to true, which logs the Slack
-# messages it would send without posting them or writing state. To go live, set
-# the repository variable MONTANDON_DRY_RUN to 'false' (Settings -> Secrets and
-# variables -> Actions -> Variables) -- no edit to this file needed.
-
 on:
   schedule:
-    - cron: '31 0 * * *'   # 00:31 UTC daily, clear of the GDACS/WHO run at 00:01
+    - cron: '31 0 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -47,8 +40,6 @@ jobs:
         env:
           MONTANDON_API_TOKEN: ${{ secrets.MONTANDON_API_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          # A choice input is a non-empty string on dispatch and empty on a
-          # schedule, so 'false' survives the fallback chain intact.
           DRY_RUN: ${{ inputs.dry_run || vars.MONTANDON_DRY_RUN || 'true' }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days }}
           START_DATE: ${{ inputs.start_date }}
@@ -57,7 +48,6 @@ jobs:
       - name: Commit updated state file
         if: always()
         run: |
-          # Nothing is written on a dry run, so there may be no file yet.
           if [ ! -f posted_montandon.json ]; then
             echo "No state file to commit (dry run?)"
             exit 0
@@ -69,8 +59,7 @@ jobs:
           git diff --staged --quiet && echo "No state changes" && exit 0
           git commit -m "Update posted Montandon alert state"
 
-          # The GDACS/WHO workflow commits its own state files to this branch,
-          # so a push can lose a race even with the schedules staggered.
+          # Retry if another alert workflow pushed state first.
           for attempt in 1 2 3; do
             if git push; then
               exit 0
