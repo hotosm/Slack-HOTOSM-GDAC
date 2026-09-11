@@ -2,7 +2,9 @@
 !.gitignore
 !gdacs-slack.py
 !who-don-slack.py
+!montandon-slack.py
 !.github/
 !.github/**
 !posted_events.json
 !posted_dons.json
+!posted_montandon.json
