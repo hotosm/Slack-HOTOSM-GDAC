@@ -1,35 +1,31 @@
+import html
 import os
 import json
 import re
+import sys
 import time
 import requests
 from datetime import datetime, timedelta, timezone
 
 SLACK_WEBHOOK_URL = os.environ['SLACK_WEBHOOK_URL']
 
-# Set DRY_RUN=true (as a workflow env var) to preview what would be posted
-# without actually sending anything to Slack and without updating
-# posted_dons.json.
+# Preview messages without posting or updating state.
 DRY_RUN = os.environ.get('DRY_RUN', 'false').lower() == 'true'
 
 API_URL = 'https://www.who.int/api/news/diseaseoutbreaknews'
 STATE_FILE = 'posted_dons.json'
 
-# Note: Workflow Builder webhooks are plain text/variables only — there's
-# no way to set a custom color bar like WHO's brand blue (#009EDB) here.
-# The closest available substitute is the blue circle emoji below.
+# Attachment accent color.
+WHO_BLUE = "#009EDB"
 
-# Only look at DONs published after this cutoff. Two ways to control it:
-#   - START_DATE env var: an actual calendar date, e.g. "2026-01-01"
-#     (takes priority if set — no need to calculate day-counts)
-#   - LOOKBACK_DAYS env var: a rolling N-days-back window (default 30)
+# START_DATE overrides the rolling LOOKBACK_DAYS window (default 30).
 _start_date_str = os.environ.get('START_DATE', '').strip()
 if _start_date_str:
     CUTOFF_DATE = datetime.fromisoformat(_start_date_str).replace(tzinfo=timezone.utc)
 else:
     _lookback_str = os.environ.get('LOOKBACK_DAYS', '').strip()
     LOOKBACK_DAYS = int(_lookback_str) if _lookback_str else 30
-    CUTOFF_DATE = None  # computed fresh at run time in main() from LOOKBACK_DAYS
+    CUTOFF_DATE = None
 
 def load_posted_ids():
     try:
@@ -44,13 +40,19 @@ def save_posted_ids(ids):
         json.dump(sorted(ids), f, indent=2)
 
 
-def strip_html(html):
-    if not html:
+def strip_html(raw):
+    """Remove HTML tags from a string and decode HTML entities."""
+    if not raw:
         return ''
-    text = re.sub(r'<[^>]+>', ' ', html)
-    text = text.replace('&nbsp;', ' ').replace('&rsquo;', "'").replace('&ndash;', '-')
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    text = html.unescape(re.sub(r'<[^>]+>', ' ', raw))
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def escape_mrkdwn(text):
+    """Escape the three characters Slack mrkdwn treats as markup."""
+    # Decode first, or an API field already holding &amp; ends up &amp;amp;.
+    text = html.unescape(text or '')
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
 def build_don_url(item):
@@ -65,7 +67,8 @@ def build_don_url(item):
     return 'https://www.who.int/emergencies/disease-outbreak-news'
 
 
-def post_to_slack(item):
+def build_slack_payload(item):
+    """Build a Slack Incoming Webhook payload."""
     title = item.get('OverrideTitle') or item.get('Title') or 'Untitled DON'
     don_url = build_don_url(item)
     pub_date = item.get('PublicationDateAndTime', item.get('PublicationDate', ''))[:10]
@@ -74,44 +77,66 @@ def post_to_slack(item):
         summary += '...'
     don_id = item.get('DonId') or item.get('Id', '')
 
-    # Reuses the SAME variable names already declared in Workflow Builder
-    # for the GDACS alerts, so no changes are needed on the Slack side.
-    # DONs have no severity level and no single reliable country field
-    # (some cover a region or multiple countries), so those two get a
-    # WHO-specific placeholder / blank instead.
-    payload = {
-        "event_name":  f"{pub_date} \u2014 {title}",
-        "country":     "",  # DONs don't have a consistent single-country field
-        "description": summary,
-        "event_id":    don_id,
-        "alert_level": ":large_blue_circle: WHO Disease Outbreak News",
-        "event_url":   don_url,
+    lines = [
+        ":large_blue_circle: *WHO Disease Outbreak News*",
+        f"*{escape_mrkdwn(title)}*",
+    ]
+
+    meta = []
+    if pub_date:
+        meta.append(f"*Published:* {pub_date}")
+    if don_id:
+        meta.append(f"*ID:* {don_id}")
+    if meta:
+        lines.append("   ".join(meta))
+
+    if summary:
+        lines.append("")
+        lines.append(escape_mrkdwn(summary))
+
+    lines.append("")
+    lines.append(f"<{don_url}|Read the full report on who.int>")
+
+    return {
+        "attachments": [
+            {
+                "fallback": f"WHO Disease Outbreak News: {title}",
+                "color": WHO_BLUE,
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+                    }
+                ],
+            }
+        ],
     }
+
+
+def post_to_slack(item):
+    """Post a DON to Slack. Returns True only if Slack accepted the message."""
+    payload = build_slack_payload(item)
 
     if DRY_RUN:
         print("--- DRY RUN: would post ---")
         print(json.dumps(payload, indent=2))
         print("---------------------------")
-        return "DRY_RUN"
+        return True
 
-    r = requests.post(SLACK_WEBHOOK_URL, json=payload)
+    try:
+        r = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=15)
+    except requests.RequestException as e:
+        print(f"Slack request failed: {e}")
+        return False
+
     if r.status_code != 200:
-        print(f"Slack error {r.status_code}: {r.text}")
-    return r.status_code
+        print(f"Slack error {r.status_code}: {r.text.strip()}")
+        return False
+    return True
 
 
 def fetch_all_recent_items(cutoff):
-    """
-    The WHO API defaults to returning the OLDEST records first, paginated
-    at ~50 per page. We request newest-first via $orderby and page through
-    until we hit items older than our cutoff.
-
-    Fallback: some OData-style endpoints silently ignore $orderby. If the
-    very first item we get back is still ancient (well past the cutoff),
-    we instead fetch the total record count and jump straight to the last
-    page, which will hold the newest records under the default (ascending)
-    ordering.
-    """
+    """Fetch recent DONs, falling back if the API ignores sort order."""
     def get_page(params):
         resp = requests.get(API_URL, params=params, timeout=30)
         if resp.status_code != 200:
@@ -131,7 +156,7 @@ def fetch_all_recent_items(cutoff):
 
     page_size = 100
 
-    # First attempt: request newest-first directly.
+    # Try newest-first.
     first_page = get_page({'$orderby': 'PublicationDate desc', '$top': page_size, '$skip': 0})
     if first_page is None:
         return []
@@ -140,7 +165,6 @@ def fetch_all_recent_items(cutoff):
         first_date = parse_date(first_page[0])
 
         if first_date and first_date >= cutoff:
-            # $orderby worked as expected — page forward normally.
             recent_items = []
             skip = 0
             items = first_page
@@ -162,9 +186,7 @@ def fetch_all_recent_items(cutoff):
                     break
             return recent_items
 
-    # Fallback: $orderby was ignored (or had no effect) — get total count
-    # and jump to the final page(s), where the newest records live under
-    # the default ascending order.
+    # Default ordering is oldest-first, so start from the final page.
     count_resp = requests.get(f"{API_URL}/$count", timeout=30)
     if count_resp.status_code != 200:
         print(f"WHO API error: could not get total count, status {count_resp.status_code}")
@@ -198,25 +220,30 @@ def main():
 
     posted_ids = load_posted_ids()
     new_count = 0
+    error_count = 0
 
     for item in recent_items:
-        # DonId is the stable identifier when present; fall back to the
-        # internal Id (a permanent guid) for older entries where DonId is blank.
+        # Older entries may only have an internal ID.
         dedup_key = item.get('DonId') or item.get('Id')
         if not dedup_key or dedup_key in posted_ids:
             continue
 
-        status = post_to_slack(item)
-        print(f"Posted {dedup_key}: {status}")
-        posted_ids.add(dedup_key)
-        new_count += 1
-        time.sleep(1)  # avoid Slack rate limiting
+        if post_to_slack(item):
+            print(f"Posted {dedup_key}")
+            posted_ids.add(dedup_key)
+            new_count += 1
+        else:
+            print(f"Failed to post {dedup_key} -- will retry on the next run")
+            error_count += 1
+        time.sleep(1)  # Slack allows about one message per second.
 
     if DRY_RUN:
         print(f"Checked {len(recent_items)} recent DONs, would post {new_count} new (DRY_RUN, state not saved)")
     else:
         save_posted_ids(posted_ids)
         print(f"Checked {len(recent_items)} recent DONs, posted {new_count} new")
+        if error_count:
+            sys.exit(f"{error_count} DON(s) failed to post -- will retry on the next run")
 
 
 if __name__ == '__main__':

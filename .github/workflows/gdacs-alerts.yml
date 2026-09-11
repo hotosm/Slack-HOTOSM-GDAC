@@ -41,6 +41,7 @@ jobs:
         run: python gdacs-slack.py
 
       - name: Run WHO DON alert check
+        if: ${{ !cancelled() }}   # still run if the GDACS step failed
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           DRY_RUN: ${{ inputs.dry_run }}
