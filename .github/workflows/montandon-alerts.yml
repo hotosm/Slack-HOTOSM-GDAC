@@ -1,71 +1,71 @@
-name: Montandon Disaster Alerts
+# name: Montandon Disaster Alerts
 
-on:
-  schedule:
-    - cron: '31 0 * * *'
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Preview only, do not post to Slack or save state'
-        type: choice
-        options: ['true', 'false']
-        default: 'true'
-      lookback_days:
-        description: 'Rolling window in days (used only if start_date is blank)'
-        type: string
-        default: '7'
-      start_date:
-        description: 'Cutoff date, e.g. 2026-01-01 (overrides lookback_days if set)'
-        type: string
-        default: ''
+# on:
+#   schedule:
+#     - cron: '31 0 * * *'
+#   workflow_dispatch:
+#     inputs:
+#       dry_run:
+#         description: 'Preview only, do not post to Slack or save state'
+#         type: choice
+#         options: ['true', 'false']
+#         default: 'true'
+#       lookback_days:
+#         description: 'Rolling window in days (used only if start_date is blank)'
+#         type: string
+#         default: '7'
+#       start_date:
+#         description: 'Cutoff date, e.g. 2026-01-01 (overrides lookback_days if set)'
+#         type: string
+#         default: ''
 
-permissions:
-  contents: write
+# permissions:
+#   contents: write
 
-jobs:
-  check-alerts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
+# jobs:
+#   check-alerts:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
+#       - name: Set up Python
+#         uses: actions/setup-python@v6
+#         with:
+#           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install requests
+#       - name: Install dependencies
+#         run: pip install requests
 
-      - name: Run Montandon alert check
-        env:
-          MONTANDON_API_TOKEN: ${{ secrets.MONTANDON_API_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          DRY_RUN: ${{ inputs.dry_run || vars.MONTANDON_DRY_RUN || 'true' }}
-          LOOKBACK_DAYS: ${{ inputs.lookback_days }}
-          START_DATE: ${{ inputs.start_date }}
-        run: python montandon-slack.py
+#       - name: Run Montandon alert check
+#         env:
+#           MONTANDON_API_TOKEN: ${{ secrets.MONTANDON_API_TOKEN }}
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+#           DRY_RUN: ${{ inputs.dry_run || vars.MONTANDON_DRY_RUN || 'true' }}
+#           LOOKBACK_DAYS: ${{ inputs.lookback_days }}
+#           START_DATE: ${{ inputs.start_date }}
+#         run: python montandon-slack.py
 
-      - name: Commit updated state file
-        if: always()
-        run: |
-          if [ ! -f posted_montandon.json ]; then
-            echo "No state file to commit (dry run?)"
-            exit 0
-          fi
+#       - name: Commit updated state file
+#         if: always()
+#         run: |
+#           if [ ! -f posted_montandon.json ]; then
+#             echo "No state file to commit (dry run?)"
+#             exit 0
+#           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add posted_montandon.json
-          git diff --staged --quiet && echo "No state changes" && exit 0
-          git commit -m "Update posted Montandon alert state"
+#           git config user.name "github-actions[bot]"
+#           git config user.email "github-actions[bot]@users.noreply.github.com"
+#           git add posted_montandon.json
+#           git diff --staged --quiet && echo "No state changes" && exit 0
+#           git commit -m "Update posted Montandon alert state"
 
-          # Retry if another alert workflow pushed state first.
-          for attempt in 1 2 3; do
-            if git push; then
-              exit 0
-            fi
-            echo "Push failed (attempt $attempt), rebasing on the remote"
-            git pull --rebase
-          done
-          echo "Could not push state after 3 attempts" >&2
-          exit 1
+#           # Retry if another alert workflow pushed state first.
+#           for attempt in 1 2 3; do
+#             if git push; then
+#               exit 0
+#             fi
+#             echo "Push failed (attempt $attempt), rebasing on the remote"
+#             git pull --rebase
+#           done
+#           echo "Could not push state after 3 attempts" >&2
+#           exit 1
