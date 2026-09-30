@@ -708,5 +708,15 @@
     "todate": "2026-09-24T21:00:00",
     "datemodified": "2026-09-24T23:22:17",
     "posted_at": "2026-09-25"
+  },
+  {
+    "event_id": "1001325",
+    "alert_level": "Red",
+    "event_name": "Tropical Cyclone POLO-26",
+    "country": "Mexico",
+    "fromdate": "2026-09-21T03:00:00",
+    "todate": "2026-09-29T21:00:00",
+    "datemodified": "2026-09-30T00:15:14",
+    "posted_at": "2026-09-30"
   }
 ]
