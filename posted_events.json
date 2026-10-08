@@ -718,5 +718,15 @@
     "todate": "2026-09-29T21:00:00",
     "datemodified": "2026-09-30T00:15:14",
     "posted_at": "2026-09-30"
+  },
+  {
+    "event_id": "1001335",
+    "alert_level": "Red",
+    "event_name": "Tropical Cyclone SIMON-26",
+    "country": "Mexico",
+    "fromdate": "2026-10-07T15:00:00",
+    "todate": "2026-10-07T21:00:00",
+    "datemodified": "2026-10-07T20:47:47",
+    "posted_at": "2026-10-08"
   }
 ]
