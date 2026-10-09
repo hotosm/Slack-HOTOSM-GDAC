@@ -728,5 +728,35 @@
     "todate": "2026-10-07T21:00:00",
     "datemodified": "2026-10-07T20:47:47",
     "posted_at": "2026-10-08"
+  },
+  {
+    "event_id": "1001335",
+    "alert_level": "Orange",
+    "event_name": "Tropical Cyclone SIMON-26",
+    "country": "",
+    "fromdate": "2026-10-07T15:00:00",
+    "todate": "2026-10-08T21:00:00",
+    "datemodified": "2026-10-09T00:10:06",
+    "posted_at": "2026-10-09"
+  },
+  {
+    "event_id": "1000151",
+    "alert_level": "Orange",
+    "event_name": "Eruption  Taal",
+    "country": "Philippines",
+    "fromdate": "2026-10-08T10:29:00",
+    "todate": "2026-10-08T10:29:00",
+    "datemodified": "2026-10-08T13:02:20",
+    "posted_at": "2026-10-09"
+  },
+  {
+    "event_id": "1570077",
+    "alert_level": "Orange",
+    "event_name": "Earthquake in Vanuatu",
+    "country": "Vanuatu",
+    "fromdate": "2026-10-08T09:00:07",
+    "todate": "2026-10-08T09:00:07",
+    "datemodified": "2026-10-08T12:02:03",
+    "posted_at": "2026-10-09"
   }
 ]
