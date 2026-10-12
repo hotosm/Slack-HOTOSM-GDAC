@@ -15,9 +15,6 @@ DRY_RUN = os.environ.get('DRY_RUN', 'false').lower() == 'true'
 API_URL = 'https://www.who.int/api/news/diseaseoutbreaknews'
 STATE_FILE = 'posted_dons.json'
 
-# Attachment accent color.
-WHO_BLUE = "#009EDB"
-
 # START_DATE overrides the rolling LOOKBACK_DAYS window (default 30).
 _start_date_str = os.environ.get('START_DATE', '').strip()
 if _start_date_str:
@@ -98,16 +95,11 @@ def build_slack_payload(item):
     lines.append(f"<{don_url}|Read the full report on who.int>")
 
     return {
-        "attachments": [
+        "text": f"WHO Disease Outbreak News: {title}",
+        "blocks": [
             {
-                "fallback": f"WHO Disease Outbreak News: {title}",
-                "color": WHO_BLUE,
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-                    }
-                ],
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
             }
         ],
     }

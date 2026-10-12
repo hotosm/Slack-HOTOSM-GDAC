@@ -70,10 +70,6 @@ IMPACT_DISPLAY_ORDER = [
 ]
 
 GDACS_LEVEL_NAMES = ("red", "orange", "green")
-# Green events triggered by impact use the neutral colour.
-ALERT_COLOURS = {"red": "#CC0000", "orange": "#FF9900"}
-DEFAULT_COLOUR = "#4A90D9"
-
 ALERT_EMOJI = {"red": ":red_circle:", "orange": ":large_orange_circle:"}
 DEFAULT_EMOJI = ":large_blue_circle:"
 
@@ -576,16 +572,11 @@ def build_slack_payload(group: dict, reasons: list, is_update: bool) -> dict:
 
     countries_fallback = ", ".join(country_name(c) for c in group["countries"]) or "unknown"
     return {
-        "attachments": [
+        "text": f"{group['hazard_label']} alert: {group['title']} ({countries_fallback})",
+        "blocks": [
             {
-                "fallback": f"{group['hazard_label']} alert: {group['title']} ({countries_fallback})",
-                "color": ALERT_COLOURS.get(level, DEFAULT_COLOUR),
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-                    }
-                ],
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
             }
         ],
     }
@@ -594,7 +585,7 @@ def build_slack_payload(group: dict, reasons: list, is_update: bool) -> dict:
 def post_to_slack(payload: dict) -> bool:
     if DRY_RUN:
         print("--- DRY RUN: would post ---")
-        print(payload["attachments"][0]["blocks"][0]["text"]["text"])
+        print(payload["blocks"][0]["text"]["text"])
         print("---------------------------")
         return True
 

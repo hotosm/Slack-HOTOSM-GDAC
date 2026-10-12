@@ -36,12 +36,6 @@ INITIAL_FROM_DATE = "2026-01-01"
 
 ALERT_LEVELS = {"orange", "red"}
 
-# Attachment accent colors.
-ALERT_COLOURS = {
-    "red":    "#CC0000",
-    "orange": "#FF9900",
-}
-
 # Keep descriptions readable and within Slack's block limit.
 MAX_DESCRIPTION_CHARS = 500
 
@@ -174,18 +168,12 @@ def build_slack_payload(event: dict) -> dict:
     lines.append("")
     lines.append(f"<{event['event_url']}|View the full GDACS report>")
 
-    # Used for notifications when the attachment is not shown.
     return {
-        "attachments": [
+        "text": f"GDACS {event['alert_level']} alert: {event['event_name']} ({event['country']})",
+        "blocks": [
             {
-                "fallback": f"GDACS {event['alert_level']} alert: {event['event_name']} ({event['country']})",
-                "color": ALERT_COLOURS.get(level, "#CCCCCC"),
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-                    }
-                ],
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
             }
         ],
     }
