@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Post significant disasters from the Montandon STAC API to Slack."""
+"""Find, group, and post high-priority Montandon disasters to Slack."""
 
 import html
 import json
@@ -15,104 +15,148 @@ import requests
 STATE_FILE = "posted_montandon.json"
 
 STAC_API_URL = os.environ.get(
-    "MONTANDON_STAC_URL", "https://montandon-eoapi-stage.ifrc.org/stac"
+    "MONTANDON_STAC_URL", "https://montandon-eoapi.ifrc.org/stac"
 ).rstrip("/")
 
 API_TOKEN = os.environ.get("MONTANDON_API_TOKEN", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
-# Preview until the workflow is explicitly enabled.
+# Default to preview mode.
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() != "false"
 
-COLLECTIONS = [
-    "gdacs-events", "pdc-events", "usgs-events", "glide-events",
-    "emdat-events", "ifrcevent-events", "idmc-idu-events",
-    "cems-events", "charter-events",
-    "gdacs-hazards", "pdc-hazards", "usgs-hazards", "ibtracs-hazards",
-    "glide-hazards", "ifrcevent-hazards",
-    "gdacs-impacts", "pdc-impacts", "emdat-impacts",
-    "idmc-idu-impacts", "ifrcevent-impacts",
-]
+SEED_STATE = os.environ.get("SEED_STATE", "").lower() == "true"
+
+# More new alerts and updates than this in one run suggests bad data; post nothing.
+MAX_PENDING_ALERTS = 10
 
 PAGE_SIZE = 200
-MAX_ITEMS_PER_COLLECTION = 3000
+MAX_ITEMS_PER_QUERY = 5000
 
-GDACS_ALERT_LEVELS = {"orange", "red"}
+# -- Alert thresholds ----------------------------------------------------------
 
-# Units are matched exactly: sources spell magnitude several ways ("mww", "mb"),
-# and a substring test would read the "m" in "km/h" as a moment magnitude.
-SEVERITY_TRIGGERS = [
-    ({"m", "mw", "mww", "mwr", "mwc", "mwb", "mwp", "mb", "ms", "ml", "md"},
-     6.0, "M{value:.1f} earthquake"),
-    ({"knots", "knot", "kt"}, 64.0, "{value:.0f} kt winds"),
-    ({"km/h", "kph"}, 119.0, "{value:.0f} km/h winds"),
-]
+# GDACS Orange triggers only for these families.
+GDACS_ORANGE_FAMILIES = {"GH01", "GH02", "MH03", "MH06", "MH07"}
 
+MAGNITUDE_ANYWHERE = 7.0
+MAGNITUDE_ON_LAND = 6.5         # Requires a named country, not open ocean.
+CYCLONE_WIND_KT = 96            # Saffir-Simpson category 3.
+
+# Late records require a current GDACS Orange or Red alert.
+STALE_AFTER_DAYS = 30
+
+# Reported impact thresholds. Precautionary evacuations are excluded.
 IMPACT_TRIGGERS = {
-    "death":              10,
-    "missing":            10,
-    "displaced_internal": 1000,
-    "displaced_total":    1000,
-    "displaced_external": 1000,
-    "evacuated":          1000,
-    "homeless":           1000,
-    "affected_total":     10000,
+    "death":              50,
+    "missing":            50,
+    "displaced_internal": 50000,
+    "displaced_total":    50000,
+    "homeless":           50000,
+    "affected_total":     500000,
 }
 
-IMPACT_DISPLAY_ORDER = [
-    ("death", "Deaths"), ("missing", "Missing"), ("injured", "Injured"),
-    ("displaced_internal", "Displaced"), ("displaced_total", "Displaced"),
-    ("displaced_external", "Displaced (cross-border)"),
-    ("evacuated", "Evacuated"), ("homeless", "Homeless"),
-    ("relocated", "Relocated"), ("shelter_emergency", "In emergency shelter"),
-    ("affected_total", "Affected"), ("destroyed", "Destroyed"),
-    ("damaged", "Damaged"),
+# IFRC operations are reported but do not trigger alerts alone.
+SUPPORTING_REASONS = {"ifrc"}
+
+# -- Sources -------------------------------------------------------------------
+
+TRIGGER_QUERIES = [
+    (["gdacs-hazards"], {"op": "in", "args": [
+        {"property": "monty:hazard_detail.severity_label"},
+        ["Orange", "Red", "orange", "red"]]}),
+    (["usgs-events"], {"op": ">=", "args": [
+        {"property": "eq:magnitude"}, MAGNITUDE_ON_LAND]}),
+    (["ibtracs-hazards"], {"op": ">=", "args": [
+        {"property": "monty:hazard_detail.severity_value"}, CYCLONE_WIND_KT]}),
+    (["gdacs-impacts", "emdat-impacts", "idmc-idu-impacts", "ifrcevent-impacts",
+      "cems-impacts"],
+     {"op": "or", "args": [
+         {"op": "and", "args": [
+             {"op": "=", "args": [{"property": "monty:impact_detail.type"}, kind]},
+             {"op": ">=", "args": [{"property": "monty:impact_detail.value"}, minimum]},
+         ]}
+         for kind, minimum in IMPACT_TRIGGERS.items()]}),
+    (["cems-events", "ifrcevent-events"], None),
 ]
 
-GDACS_LEVEL_NAMES = ("red", "orange", "green")
-ALERT_EMOJI = {"red": ":red_circle:", "orange": ":large_orange_circle:"}
-DEFAULT_EMOJI = ":large_blue_circle:"
-
-MAX_DESCRIPTION_CHARS = 500
+# Sources used to enrich candidates. Noisy, modelled PDC data is excluded.
+CONTEXT_COLLECTIONS = [
+    "gdacs-events", "gdacs-impacts", "usgs-events", "usgs-impacts",
+    "glide-events", "cems-events", "emdat-events", "emdat-impacts",
+    "idmc-idu-events", "idmc-idu-impacts", "ifrcevent-events", "ifrcevent-impacts",
+    "ibtracs-events",
+]
+CONTEXT_PADDING_DEG = 1.5
+CONTEXT_MAX_SPAN_DEG = 25.0     # Skip continent-sized droughts.
 
 SOURCE_NAMES = {
     "gdacs": "GDACS", "pdc": "PDC", "usgs": "USGS", "glide": "GLIDE",
     "emdat": "EM-DAT", "idmc": "IDMC", "ibtracs": "IBTrACS", "cems": "Copernicus EMS",
     "charter": "Disasters Charter", "ifrcevent": "IFRC", "desinventar": "DesInventar",
-    "gfd": "Global Flood Database", "alerthub": "AlertHub", "reference": "Montandon",
+    "gfd": "Global Flood Database",
 }
 
-# Match at hazard-group level, e.g. both GH0101 and GH0102 are earthquakes.
+SOURCE_RANK = ["GDACS", "IFRC", "Copernicus EMS", "USGS", "GLIDE", "EM-DAT", "IDMC",
+               "IBTrACS"]
+
+# These figures are exposure estimates, even where tagged as primary.
+MODELLED_SOURCES = {"PDC", "USGS"}
+MODELLED_UNITS = {"GDACS TC", "GDACS WF"}
+MODELLED_TYPES = {"potentially_affected"}
+
+# Exclude demographic and asset breakdowns from population totals.
+PEOPLE_CATEGORIES = {"people", "total_affected", None}
+
+IMPACT_LABELS = [
+    ("death", "Deaths"), ("missing", "Missing"), ("injured", "Injured"),
+    ("displaced_internal", "Displaced"), ("displaced_total", "Displaced"),
+    ("evacuated", "Evacuated"), ("homeless", "Homeless"),
+    ("relocated", "Relocated"), ("affected_total", "Affected"),
+    ("potentially_affected", "Exposed"),
+]
+
+GDACS_LEVELS = ("red", "orange", "green")
+LEVEL_RANK = {"red": 2, "orange": 1}
+ALERT_EMOJI = {"red": ":red_circle:", "orange": ":large_orange_circle:"}
+DEFAULT_EMOJI = ":large_blue_circle:"
+
+MAX_DESCRIPTION_CHARS = 500
+
+# UNDRR family: the first four characters of a code such as GH0101.
 HAZARD_LABELS = {
     "GH01": (":earth_americas:", "Earthquake"),
     "GH02": (":volcano:", "Volcanic activity"),
     "GH03": (":mountain:", "Landslide"),
-    "MH03": (":cyclone:", "Cyclone"),
+    "MH01": (":cloud_with_rain:", "Severe weather"),
+    "MH03": (":cyclone:", "Storm"),
     "MH04": (":sun_with_face:", "Drought"),
     "MH05": (":thermometer:", "Extreme temperature"),
     "MH06": (":ocean:", "Flood"),
     "MH07": (":ocean:", "Tsunami / coastal"),
     "MH08": (":snowflake:", "Snow and ice"),
-    "EN01": (":fire:", "Wildfire"),
+    "EN02": (":fire:", "Wildfire"),
     "BI01": (":microbe:", "Epidemic"),
     "SO02": (":warning:", "Conflict / unrest"),
-    "TL00": (":warning:", "Technological"),
 }
-GLIDE_LABELS = {
-    "EQ": (":earth_americas:", "Earthquake"), "VO": (":volcano:", "Volcanic activity"),
-    "LS": (":mountain:", "Landslide"), "TC": (":cyclone:", "Cyclone"),
-    "DR": (":sun_with_face:", "Drought"), "FL": (":ocean:", "Flood"),
-    "TS": (":ocean:", "Tsunami"), "WF": (":fire:", "Wildfire"),
-    "EP": (":microbe:", "Epidemic"), "ST": (":cloud_with_lightning:", "Storm"),
-    "CW": (":snowflake:", "Cold wave"), "HT": (":thermometer:", "Heat wave"),
+GLIDE_FAMILIES = {
+    "EQ": "GH01", "VO": "GH02", "LS": "GH03", "MS": "GH03", "TC": "MH03",
+    "ST": "MH03", "VW": "MH03", "DR": "MH04", "HT": "MH05", "CW": "MH05",
+    "FL": "MH06", "FF": "MH06", "TS": "MH07", "WF": "EN02", "EP": "BI01",
 }
 
 MERGE_RADIUS_KM = 500.0
-MERGE_WINDOW_HOURS = 36
+MERGE_WINDOW_DAYS = 3
 
-# Placeholder units do not represent a comparable severity reading.
-NULL_SEVERITY_UNITS = {"glide", "count"}
+UNDRR_CODE = re.compile(r"^[A-Z]{2}\d{4}$")
+GDACS_LEVEL_IN_DESCRIPTION = re.compile(r"^\s*(green|orange|red)\b", re.IGNORECASE)
+EMSR_CODE = re.compile(r"EMSR\d+")
+STORM_NAME = re.compile(
+    r"\b(?:Tropical Cyclone|Tropical Storm|Tropical Depression|Hurricane|Typhoon|Cyclone)"
+    r"\s+([A-Za-z]+(?:-[A-Za-z]+)*)", re.IGNORECASE)
 
+MIN_MODELLED_FIGURE = 10
+
+
+# -- Helpers -------------------------------------------------------------------
 
 def escape_mrkdwn(text: str) -> str:
     text = html.unescape(text or "")
@@ -136,6 +180,10 @@ def parse_dt(value: str):
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def stac_time(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def haversine_km(a: tuple, b: tuple) -> float:
     lon1, lat1, lon2, lat2 = map(math.radians, (a[0], a[1], b[0], b[1]))
     h = (math.sin((lat2 - lat1) / 2) ** 2
@@ -143,8 +191,19 @@ def haversine_km(a: tuple, b: tuple) -> float:
     return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(h)))
 
 
-def format_figure(figure: dict) -> str:
-    return f"{'~' if figure['modelled'] else ''}{int(figure['value']):,}"
+def bbox_distance_km(a: list, b: list) -> float:
+    """Distance between the nearest points of two bounding boxes."""
+    def nearest(lo_a, hi_a, lo_b, hi_b):
+        if hi_a < lo_b:
+            return hi_a, lo_b
+        if hi_b < lo_a:
+            return lo_a, hi_b
+        overlap = max(lo_a, lo_b)
+        return overlap, overlap
+
+    lon_a, lon_b = nearest(a[0], a[2], b[0], b[2])
+    lat_a, lat_b = nearest(a[1], a[3], b[1], b[3])
+    return haversine_km((lon_a, lat_a), (lon_b, lat_b))
 
 
 def country_name(code: str) -> str:
@@ -156,49 +215,65 @@ def source_of(collection_id: str) -> str:
     return SOURCE_NAMES.get(prefix, prefix.upper() or "Unknown")
 
 
+def format_number(value: float) -> str:
+    return f"{int(value):,}"
+
+
+def death_bucket(deaths: float) -> int:
+    """Bucket deaths at 10, 100, 1,000 and so on."""
+    return int(math.log10(deaths)) if deaths and deaths >= 1 else -1
+
+
+# -- State ---------------------------------------------------------------------
+
 def load_posted() -> list:
+    """Load state, failing closed for live runs."""
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+    except FileNotFoundError:
+        if SEED_STATE or DRY_RUN:
+            return []
+        sys.exit(f"[error] {STATE_FILE} is missing. Run once with SEED_STATE=true first.")
+    except json.JSONDecodeError as e:
+        sys.exit(f"[error] {STATE_FILE} is not valid JSON ({e}); fix it before posting.")
 
 
 def save_posted(records: list) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2, ensure_ascii=False)
-    print(f"[state] Saved {len(records)} total posted alerts to {STATE_FILE}")
 
 
-def death_bucket(deaths: int) -> str:
-    if deaths <= 0:
-        return "0"
-    return f"1e{int(math.log10(deaths))}"
+def find_posted(alert: dict, posted: list) -> list:
+    tokens = set(alert["tokens"])
+    return [record for record in posted if tokens & set(record["tokens"])]
 
 
-def group_tokens(record: dict) -> set:
-    return {record.get("key") or record.get("group_key", "")} | set(record.get("corr_ids") or [])
+def remember(alert: dict, matches: list, posted: list) -> dict:
+    """Merge newly matched source IDs into state."""
+    if matches:
+        record = matches[0]
+    else:
+        record = {"tokens": [], "level_rank": 0, "death_bucket": -1}
+        posted.append(record)
+    record["tokens"] = sorted(set(record["tokens"]).union(
+        alert["tokens"], *(m["tokens"] for m in matches)))
+    record["level_rank"] = max([LEVEL_RANK.get(alert["level"], 0)]
+                               + [m["level_rank"] for m in matches])
+    record["death_bucket"] = max([death_bucket(alert["reported"].get("death", 0))]
+                                 + [m["death_bucket"] for m in matches])
+    record["title"] = record.get("title") or alert["title"]
+    record["countries"] = alert["countries"]
+    return record
 
 
-def state_signature(group: dict) -> str:
-    """Repost when the alert level or death-toll magnitude changes."""
-    return f"{group['alert_level'] or '-'}|{death_bucket(int(impact_value(group, 'death') or 0))}"
-
-
-def index_posted(records: list) -> dict:
-    index = {}
-    for record in records:
-        for token in group_tokens(record):
-            if token:
-                index.setdefault(token, set()).add(record.get("signature", ""))
-    return index
-
+# -- Montandon API -------------------------------------------------------------
 
 def api_session() -> requests.Session:
     if not API_TOKEN:
         raise EnvironmentError(
             "MONTANDON_API_TOKEN is not set. Generate a token from your IFRC GO "
-            "account settings (https://goadmin-stage.ifrc.org/)."
+            "account settings (https://go.ifrc.org/)."
         )
     session = requests.Session()
     session.headers.update({
@@ -208,353 +283,378 @@ def api_session() -> requests.Session:
     return session
 
 
-def available_collections(session: requests.Session) -> set:
-    """Return all collection IDs, including paginated results."""
-    url, params = f"{STAC_API_URL}/collections", {"limit": 1000}
-    collections = set()
-
-    while url and len(collections) < 1000:
-        response = session.get(url, params=params, timeout=60)
-        response.raise_for_status()
-        payload = response.json()
-        collections |= {c["id"] for c in payload.get("collections", [])}
-
-        nxt = next((l for l in payload.get("links", []) if l.get("rel") == "next"), None)
-        url, params = (nxt or {}).get("href"), None
-
-    return collections
-
-
-def search_collection(session: requests.Session, collection: str, window: str) -> list:
-    body = {"collections": [collection], "datetime": window, "limit": PAGE_SIZE}
+def search(session: requests.Session, body: dict, label: str) -> list:
+    """Search all pages; abort rather than return partial data."""
+    body = {"limit": PAGE_SIZE, **body}
+    if "filter" in body:
+        body["filter-lang"] = "cql2-json"
     url = f"{STAC_API_URL}/search"
     items = []
 
     while True:
-        try:
-            response = session.post(url, json=body, timeout=120)
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as e:
-            print(f"[error] {collection}: search failed: {e}", file=sys.stderr)
-            break
+        response = None
+        for attempt in range(3):
+            try:
+                response = session.post(url, json=body, timeout=120)
+                if response.status_code < 500:
+                    break
+            except requests.RequestException as e:
+                print(f"[warn] {label}: {e}", file=sys.stderr)
+            time.sleep(5 * (attempt + 1))
+        if response is None or response.status_code != 200:
+            detail = response.text[:300] if response is not None else "no response"
+            sys.exit(f"[error] {label}: search failed, nothing posted: {detail}")
 
+        payload = response.json()
         features = payload.get("features", [])
         items.extend(features)
 
-        if len(items) >= MAX_ITEMS_PER_COLLECTION:
-            print(f"[warn] {collection}: hit the {MAX_ITEMS_PER_COLLECTION}-item "
-                  f"ceiling, narrow the window", file=sys.stderr)
-            break
+        if len(items) > MAX_ITEMS_PER_QUERY:
+            sys.exit(f"[error] {label}: over {MAX_ITEMS_PER_QUERY} items, nothing posted")
 
         # A STAC next link may replace or extend the POST body.
         nxt = next((l for l in payload.get("links", []) if l.get("rel") == "next"), None)
         if not nxt or not features:
             break
         url = nxt.get("href", url)
-        if nxt.get("merge", False):
-            body = {**body, **nxt.get("body", {})}
-        else:
-            body = nxt.get("body", body)
+        body = {**body, **nxt.get("body", {})} if nxt.get("merge") else nxt.get("body", body)
 
-    print(f"[stac] {collection}: {len(items)} items")
     return items
 
 
-UNDRR_CODE = re.compile(r"^[A-Z]{2}\d{4}$")
-GLIDE_CODE = re.compile(r"^[A-Z]{2}$")
+# -- Parsing -------------------------------------------------------------------
 
-GDACS_LEVEL_IN_DESCRIPTION = re.compile(r"^\s*(green|orange|red)\b", re.IGNORECASE)
-GDACS_LEVEL_IN_ICON = re.compile(r"/maps/(green|orange|red)/", re.IGNORECASE)
-
-
-def alert_level_of(item: dict) -> str:
-    """Read a GDACS colour from the structured field or legacy fallbacks."""
-    props = item.get("properties", {})
-
-    label = (props.get("monty:hazard_detail") or {}).get("severity_label", "")
-    if isinstance(label, str) and label.lower() in GDACS_LEVEL_NAMES:
-        return label.lower()
-
-    match = GDACS_LEVEL_IN_DESCRIPTION.match(props.get("description") or "")
-    if match:
-        return match.group(1).lower()
-
-    icon = (item.get("assets", {}).get("icon") or {}).get("href", "")
-    match = GDACS_LEVEL_IN_ICON.search(icon)
-    if match:
-        return match.group(1).lower()
-
-    return ""
-
-
-def hazard_identity(hazard_codes: list) -> str:
-    """Prefer a UNDRR code, falling back to a legacy GLIDE code."""
-    codes = [c for c in (hazard_codes or []) if isinstance(c, str)]
-
+def hazard_family(codes: list) -> str:
+    """Prefer GLIDE because some sources assign inconsistent UNDRR codes."""
+    codes = [c for c in (codes or []) if isinstance(c, str)]
+    for code in codes:
+        if code in GLIDE_FAMILIES:
+            return GLIDE_FAMILIES[code]
     for code in codes:
         if UNDRR_CODE.match(code):
             return code[:4]
-    for code in codes:
-        if GLIDE_CODE.match(code) and code in GLIDE_LABELS:
-            return code
-
-    return codes[0] if codes else "UNKNOWN"
+    return "UNKNOWN"
 
 
-def label_for_code(hazard_code: str) -> tuple:
-    return (HAZARD_LABELS.get(hazard_code)
-            or GLIDE_LABELS.get(hazard_code)
-            or (":warning:", "Hazard"))
+def storm_name(title: str) -> str:
+    """Cyclone name without the GDACS year suffix, e.g. KOGUMA-26 -> KOGUMA."""
+    match = STORM_NAME.search(title)
+    if not match:
+        return ""
+    name = re.sub(r"-\d+$", "", match.group(1).upper())
+    return "" if name in ("UNNAMED", "INVEST") or name.isdigit() else name
 
 
-def representative_point(item: dict):
-    geometry = item.get("geometry") or {}
-    if geometry.get("type") == "Point" and geometry.get("coordinates"):
-        lon, lat = geometry["coordinates"][:2]
-        return (lon, lat)
+def gdacs_level(props: dict) -> str:
+    """Read the event colour before falling back to the episode label."""
+    match = GDACS_LEVEL_IN_DESCRIPTION.match(props.get("description") or "")
+    if match:
+        return match.group(1).lower()
+    label = ((props.get("monty:hazard_detail") or {}).get("severity_label") or "").lower()
+    return label if label in GDACS_LEVELS else ""
 
-    bbox = item.get("bbox")
-    if bbox and len(bbox) >= 4:
-        return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
 
-    return None
+def report_url(item: dict, source: str, event_id: str) -> str:
+    links = item.get("links") or []
+    via = next((l.get("href", "") for l in links if l.get("rel") == "via"), "")
+
+    if source == "USGS":
+        return f"https://earthquake.usgs.gov/earthquakes/eventpage/{event_id}"
+    if source == "IFRC":
+        return f"https://go.ifrc.org/emergencies/{event_id}"
+    if source in ("Copernicus EMS", "EM-DAT"):
+        return via
+    if source in ("GDACS", "GLIDE"):
+        return ((item.get("assets") or {}).get("report") or {}).get("href", "")
+    return ""
 
 
 def parse_item(item: dict) -> dict:
     props = item.get("properties", {})
     collection = item.get("collection") or ""
+    source = source_of(collection)
     roles = props.get("roles") or []
+    event_id = str(props.get("monty:src_event_id") or props.get("monty:corr_id")
+                   or item.get("id", ""))
+    family = hazard_family(props.get("monty:hazard_codes"))
 
-    hazard_code = hazard_identity(props.get("monty:hazard_codes"))
-    when = parse_dt(props.get("datetime")) or parse_dt(props.get("start_datetime"))
+    start = parse_dt(props.get("start_datetime")) or parse_dt(props.get("datetime"))
+    end = parse_dt(props.get("end_datetime")) or start
 
-    assets = item.get("assets") or {}
-    report = (assets.get("report") or {}).get("href", "")
-    if not report:
-        report = next((l.get("href", "") for l in item.get("links", [])
-                       if l.get("rel") == "via" and l.get("type") == "text/html"), "")
+    bbox = item.get("bbox")
+    if not bbox or len(bbox) < 4:
+        coords = ((item.get("geometry") or {}).get("coordinates") or [None, None])[:2]
+        bbox = [coords[0], coords[1], coords[0], coords[1]] if None not in coords else None
+    elif len(bbox) == 6:
+        bbox = [bbox[0], bbox[1], bbox[3], bbox[4]]
+
+    detail = props.get("monty:impact_detail") or {}
+    hazard = props.get("monty:hazard_detail") or {}
+    magnitude = props.get("eq:magnitude")
+    if source == "GDACS" and (props.get("severitydata") or {}).get("severityunit") == "M":
+        magnitude = props["severitydata"].get("severity")
+
+    impact = None
+    if detail.get("type") and isinstance(detail.get("value"), (int, float)):
+        impact = {
+            "type": detail["type"],
+            "value": detail["value"],
+            "people": detail.get("category") in PEOPLE_CATEGORIES,
+            "modelled": (detail.get("estimate_type") == "modelled"
+                         or source in MODELLED_SOURCES
+                         or detail.get("unit") in MODELLED_UNITS
+                         or detail["type"] in MODELLED_TYPES),
+        }
 
     return {
-        "id": item.get("id", ""),
+        # GDACS reuses event IDs across hazard types.
+        "token": f"{source}:{family}:{event_id}",
+        "source": source,
         "collection": collection,
-        "source": source_of(collection),
-        "role": "impact" if "impact" in roles else ("hazard" if "hazard" in roles else "event"),
-        "corr_id": props.get("monty:corr_id") or "",
-        "title": (props.get("title") or "").strip(),
+        "event_id": event_id,
+        "role": "impact" if "impact" in roles else "hazard" if "hazard" in roles else "event",
+        "episode": props.get("monty:episode_number") or 0,
+        "title": strip_html(props.get("title") or ""),
         "description": strip_html(props.get("description") or ""),
-        "datetime": when,
-        "countries": [c for c in (props.get("monty:country_codes") or []) if c],
-        "hazard_code": hazard_code,
-        "alert_level": alert_level_of(item),
-        "hazard_detail": props.get("monty:hazard_detail") or {},
-        "impact_detail": props.get("monty:impact_detail") or {},
-        "point": representative_point(item),
-        "report_url": report,
-        "magnitude": props.get("eq:magnitude"),
+        "start": start,
+        "end": end,
+        "countries": {c for c in (props.get("monty:country_codes") or []) if c and c != "UNK"},
+        "family": family,
+        "storm": storm_name(props.get("title") or ""),
+        "gdacs_level": gdacs_level(props) if source == "GDACS" else "",
+        "magnitude": magnitude if isinstance(magnitude, (int, float)) else None,
+        "wind_kt": (hazard.get("severity_value")
+                    if source == "IBTrACS" and hazard.get("severity_unit") == "knots" else None),
+        "impact": impact,
+        "bbox": bbox,
+        "report_url": report_url(item, source, event_id),
     }
 
 
-def group_items(items: list) -> list:
-    """Group by corr_id, which can vary by source, then merge by place and time."""
-    buckets = {}
-    for item in items:
-        key = item["corr_id"] or f"{item['collection']}:{item['id']}"
-        buckets.setdefault(key, []).append(item)
+# -- Grouping ------------------------------------------------------------------
 
-    by_hazard = {}
-    for members in buckets.values():
-        hazard = next((m["hazard_code"] for m in members if m["hazard_code"] != "UNKNOWN"),
-                      "UNKNOWN")
-        candidate = {
-            "hazard": hazard,
-            "members": list(members),
-            "countries": {c for m in members for c in m["countries"]},
-            "points": [m["point"] for m in members if m["point"]],
-            "dates": [m["datetime"] for m in members if m["datetime"]],
-        }
-        for existing in by_hazard.setdefault(hazard, []):
-            if same_disaster(existing, candidate):
-                existing["members"].extend(candidate["members"])
-                existing["countries"] |= candidate["countries"]
-                existing["points"].extend(candidate["points"])
-                existing["dates"].extend(candidate["dates"])
-                break
-        else:
-            by_hazard[hazard].append(candidate)
-
-    return [summarise(g) for groups in by_hazard.values() for g in groups]
+def new_group(records: list) -> dict:
+    boxes = [r["bbox"] for r in records if r["bbox"]]
+    return {
+        "records": list(records),
+        "family": next((r["family"] for r in records if r["family"] != "UNKNOWN"), "UNKNOWN"),
+        "countries": set().union(*(r["countries"] for r in records)),
+        "storms": {r["storm"] for r in records if r["storm"]},
+        "bbox": [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes)] if boxes else None,
+        "start": min((r["start"] for r in records if r["start"]), default=None),
+        "end": max((r["end"] for r in records if r["end"]), default=None),
+    }
 
 
 def same_disaster(a: dict, b: dict) -> bool:
-    """Match available country, time and location data; missing fields are neutral."""
+    """Missing fields are neutral; all available ones must agree."""
+    if a["family"] != b["family"]:
+        return False
+    # Cyclone tracks are long and overlap, so names must agree when known.
+    if a["storms"] and b["storms"] and not (a["storms"] & b["storms"]):
+        return False
     if a["countries"] and b["countries"] and not (a["countries"] & b["countries"]):
         return False
-
-    if a["dates"] and b["dates"]:
-        if abs((min(a["dates"]) - min(b["dates"])).total_seconds()) > MERGE_WINDOW_HOURS * 3600:
+    if a["start"] and b["start"]:
+        window = timedelta(days=MERGE_WINDOW_DAYS)
+        if a["start"] > b["end"] + window or b["start"] > a["end"] + window:
             return False
-
-    if a["points"] and b["points"]:
-        if not any(haversine_km(p, q) <= MERGE_RADIUS_KM
-                   for p in a["points"] for q in b["points"]):
+    if a["bbox"] and b["bbox"]:
+        if bbox_distance_km(a["bbox"], b["bbox"]) > MERGE_RADIUS_KM:
             return False
-
     return True
 
 
-def merge_impacts(impacts: list) -> dict:
-    """Sum within a source, take the maximum across sources, and prefer observed data."""
-    per_source = {}
-    for m in impacts:
-        detail = m["impact_detail"]
-        kind, value = detail.get("type"), detail.get("value")
-        estimate = detail.get("estimate_type") or "primary"
-        if not kind or not isinstance(value, (int, float)):
+def group_records(records: list, anchor_tokens: set) -> list:
+    """Group records by ranked anchor, avoiding transitive A-B-C merges."""
+    by_event = {}
+    for record in records:
+        by_event.setdefault(record["token"], []).append(record)
+    units = {token: new_group(members) for token, members in by_event.items()}
+
+    # Strongest anchor first, e.g. a main shock before its aftershocks.
+    def strength(token):
+        alert = summarise(units[token])
+        return (LEVEL_RANK.get(alert["level"], 0), alert["magnitude"] or 0,
+                alert["wind_kt"] or 0)
+
+    anchors = sorted((t for t in anchor_tokens if t in units),
+                     key=lambda t: (strength(t), t), reverse=True)
+    claimed, groups = set(), []
+    for anchor in anchors:
+        if anchor in claimed:
             continue
-        bucket = per_source.setdefault((kind, estimate), {})
-        bucket[m["source"]] = bucket.get(m["source"], 0) + value
+        members = [t for t, unit in units.items() if t not in claimed
+                   and (t == anchor or same_disaster(units[anchor], unit))]
+        claimed.update(members)
+        groups.append(new_group([r for t in members for r in units[t]["records"]]))
+    return groups
 
+
+def merge_impacts(records: list, modelled: bool) -> dict:
+    """Take the largest figure per type to avoid summing duplicate reports."""
     totals = {}
-    for kind in {k for k, _ in per_source}:
-        observed = [max(per_source[(kind, e)].values())
-                    for e in ("primary", "secondary") if (kind, e) in per_source]
-        if observed:
-            totals[kind] = {"value": max(observed), "modelled": False}
-        elif (kind, "modelled") in per_source:
-            totals[kind] = {"value": max(per_source[(kind, "modelled")].values()),
-                            "modelled": True}
-
+    for r in records:
+        impact = r["impact"]
+        if not impact or not impact["people"] or impact["modelled"] != modelled:
+            continue
+        totals[impact["type"]] = max(totals.get(impact["type"], 0), impact["value"])
     return totals
 
 
-def impact_value(group: dict, kind: str):
-    return (group["impacts"].get(kind) or {}).get("value")
-
-
 def summarise(group: dict) -> dict:
-    members = group["members"]
-    countries = sorted(group["countries"])
-    emoji, hazard_label = label_for_code(group["hazard"])
+    records = group["records"]
+    tokens = sorted({r["token"] for r in records})
 
-    events = [m for m in members if m["role"] == "event"]
-    hazards = [m for m in members if m["role"] == "hazard"]
-    impacts = [m for m in members if m["role"] == "impact"]
-    ranked = sorted(events or members,
-                    key=lambda m: (m["source"] != "GDACS", not m["title"]))
+    # GDACS: the latest episode carries the current event level.
+    gdacs_latest = {}
+    for r in records:
+        if r["source"] == "GDACS" and r["gdacs_level"]:
+            current = gdacs_latest.get(r["event_id"])
+            if not current or r["episode"] > current["episode"]:
+                gdacs_latest[r["event_id"]] = r
+    levels = {r["gdacs_level"] for r in gdacs_latest.values()}
+    level = next((c for c in GDACS_LEVELS if c in levels), "")
+
+    # Prefer trusted event sources, then severity and the latest episode.
+    def rank(r):
+        source = SOURCE_RANK.index(r["source"]) if r["source"] in SOURCE_RANK else 99
+        return (source, r["role"] != "event", -LEVEL_RANK.get(r["gdacs_level"], 0),
+                -(r["magnitude"] or 0), -r["episode"], not r["title"])
+
+    ranked = sorted(records, key=rank)
     lead = ranked[0]
 
-    levels = [m["alert_level"] for m in members if m["alert_level"]]
-    alert_level = next((c for c in GDACS_LEVEL_NAMES if c in levels), "")
+    reports = {}
+    for r in ranked:
+        if r["report_url"] and r["source"] not in reports:
+            reports[r["source"]] = r["report_url"]
 
-    severities = {}
-    for m in hazards + events:
-        detail = m["hazard_detail"]
-        value, unit = detail.get("severity_value"), (detail.get("severity_unit") or "")
-        if isinstance(value, (int, float)) and unit and value and unit not in NULL_SEVERITY_UNITS:
-            severities[unit] = max(severities.get(unit, value), value)
-        if isinstance(m["magnitude"], (int, float)):
-            severities["mww"] = max(severities.get("mww", m["magnitude"]), m["magnitude"])
+    cems = sorted({m for r in records if r["source"] == "Copernicus EMS"
+                   for m in EMSR_CODE.findall(r["report_url"] + " " + r["title"])})
+    ifrc = sorted({r["event_id"] for r in records
+                   if r["source"] == "IFRC" and r["role"] == "event"})
 
-    dates = group["dates"]
-    day = min(dates).strftime("%Y-%m-%d") if dates else "unknown"
-    descriptions = sorted((m["description"] for m in events if m["description"]),
-                          key=len, reverse=True)
-    reports = {m["source"]: m["report_url"] for m in members if m["report_url"]}
-    # The reference collection correlates data; it is not a reporting source.
-    sources = sorted({m["source"] for m in members} - {SOURCE_NAMES["reference"]})
+    descriptions = [r["description"] for r in ranked if r["description"] and r["role"] == "event"]
 
     return {
-        "key": f"{day}|{'+'.join(countries) or 'unknown'}|{group['hazard']}",
-        "corr_ids": sorted({m["corr_id"] for m in members if m["corr_id"]}),
-        "title": lead["title"] or lead["description"][:80] or "Unnamed event",
-        "emoji": emoji,
-        "hazard_label": hazard_label,
-        "countries": countries,
-        "alert_level": alert_level,
-        "severities": severities,
-        "impacts": merge_impacts(impacts),
-        "sources": sources or [lead["source"]],
-        "start": min(dates) if dates else None,
-        "end": max(dates) if dates else None,
-        "description": descriptions[0] if descriptions else "",
+        "tokens": tokens,
+        "title": lead["title"] or "Unnamed event",
+        "family": group["family"],
+        "countries": sorted(group["countries"]),
+        "start": group["start"],
+        "end": group["end"],
+        "level": level,
+        "magnitude": max((r["magnitude"] for r in records if r["magnitude"]), default=None),
+        "wind_kt": max((r["wind_kt"] for r in records if r["wind_kt"]), default=None),
+        "reported": merge_impacts(records, modelled=False),
+        "modelled": merge_impacts(records, modelled=True),
+        "cems": cems,
+        "ifrc": ifrc,
+        "sources": sorted({r["source"] for r in records},
+                          key=lambda s: SOURCE_RANK.index(s) if s in SOURCE_RANK else 99),
         "reports": reports,
-        "item_count": len(members),
+        "description": descriptions[0] if descriptions else "",
     }
 
 
-def triggers(group: dict) -> list:
+# -- Alert rules ---------------------------------------------------------------
+
+def triggers(alert: dict, now: datetime) -> list:
+    """Return matched (kind, reason) pairs."""
     reasons = []
+    level, family = alert["level"], alert["family"]
+    technological = family.startswith("TL")
+    stale = alert["start"] and alert["start"] < now - timedelta(days=STALE_AFTER_DAYS)
 
-    if group["alert_level"] in GDACS_ALERT_LEVELS:
-        reasons.append(f"GDACS {group['alert_level'].capitalize()} alert")
+    if level == "red":
+        reasons.append(("gdacs_red", "GDACS Red alert"))
+    elif level == "orange" and family in GDACS_ORANGE_FAMILIES:
+        reasons.append(("gdacs_orange", "GDACS Orange alert"))
 
-    for units, minimum, template in SEVERITY_TRIGGERS:
-        for unit, value in group["severities"].items():
-            if unit.lower().strip() in units and value >= minimum:
-                reasons.append(template.format(value=value))
-                break
+    # Use raw readings only when GDACS has no assessment; Green is authoritative.
+    magnitude = alert["magnitude"]
+    if magnitude and (magnitude >= MAGNITUDE_ANYWHERE
+                      or (magnitude >= MAGNITUDE_ON_LAND and alert["countries"] and not level)):
+        reasons.append(("magnitude", f"M{magnitude:.1f} earthquake"))
 
-    for kind, minimum in IMPACT_TRIGGERS.items():
-        figure = group["impacts"].get(kind)
-        if figure and figure["value"] >= minimum:
-            label = dict(IMPACT_DISPLAY_ORDER).get(kind, kind.replace("_", " ")).lower()
-            qualifier = " (modelled)" if figure["modelled"] else ""
-            reasons.append(f"{format_figure(figure)} {label}{qualifier}")
+    wind = alert["wind_kt"]
+    if wind and wind >= CYCLONE_WIND_KT and alert["countries"] and not level:
+        reasons.append(("wind", f"{wind:.0f} kt winds"))
 
-    return list(dict.fromkeys(reasons))
+    if not technological:
+        labels = dict(IMPACT_LABELS)
+        for kind, minimum in IMPACT_TRIGGERS.items():
+            value = alert["reported"].get(kind)
+            if value and value >= minimum:
+                key = ("deaths" if kind in ("death", "missing")
+                       else "affected" if kind == "affected_total" else "displaced")
+                reasons.append((key, f"{format_number(value)} {labels[kind].lower()} reported"))
+
+    if alert["cems"]:
+        reasons.append(("cems", f"Copernicus EMS mapping activation ({', '.join(alert['cems'])})"))
+    if stale and not any(key.startswith("gdacs") for key, _ in reasons):
+        return []
+
+    if alert["ifrc"] and any(key not in SUPPORTING_REASONS for key, _ in reasons):
+        reasons.append(("ifrc", "IFRC emergency operation"))
+
+    # List each kind once.
+    unique = {}
+    for key, text in reasons:
+        unique.setdefault(key, []).append(text)
+    return [(key, "; ".join(texts)) for key, texts in unique.items()]
 
 
-def build_slack_payload(group: dict, reasons: list, is_update: bool) -> dict:
-    level = group["alert_level"]
+def escalation(alert: dict, matches: list):
+    """None if already posted at this level, else 'new' or 'update'."""
+    if not matches:
+        return "new"
+    if LEVEL_RANK.get(alert["level"], 0) > max(m["level_rank"] for m in matches):
+        return "update"
+    # Death-toll updates start at 10.
+    deaths = death_bucket(alert["reported"].get("death", 0))
+    if deaths >= 1 and deaths > max(m["death_bucket"] for m in matches):
+        return "update"
+    return None
+
+
+# -- Slack ---------------------------------------------------------------------
+
+def build_slack_payload(alert: dict, reasons: list, is_update: bool) -> dict:
+    level = alert["level"]
     emoji = ALERT_EMOJI.get(level, DEFAULT_EMOJI)
-    prefix = "Update" if is_update else "Alert"
-    heading = f"{group['hazard_label']} {prefix}"
-    if level in GDACS_ALERT_LEVELS:
+    hazard_emoji, hazard_label = HAZARD_LABELS.get(alert["family"], (":warning:", "Hazard"))
+    heading = f"{hazard_label} {'Update' if is_update else 'Alert'}"
+    if level in LEVEL_RANK:
         heading = f"{level.capitalize()} {heading}"
 
     lines = [
-        f"{emoji} *{heading}: {escape_mrkdwn(group['title'])}*",
-        f"{group['emoji']} *Hazard:* {group['hazard_label']}",
+        f"{emoji} *{heading}: {escape_mrkdwn(alert['title'])}*",
+        f"{hazard_emoji} *Hazard:* {hazard_label}",
     ]
-
-    if group["countries"]:
-        names = ", ".join(country_name(c) for c in group["countries"])
+    if alert["countries"]:
+        names = ", ".join(country_name(c) for c in alert["countries"])
         lines.append(f"*Countries:* {escape_mrkdwn(names)}")
+    if alert["start"]:
+        lines.append(f"*Started:* {alert['start'].strftime('%Y-%m-%d')}")
 
-    dates = []
-    if group["start"]:
-        dates.append(f"*From:* {group['start'].strftime('%Y-%m-%d')}")
-    if group["start"] and group["end"] and group["end"].date() != group["start"].date():
-        dates.append(f"*To:* {group['end'].strftime('%Y-%m-%d')}")
-    if dates:
-        lines.append("   ".join(dates))
+    lines.append(f"*Why this alert:* {escape_mrkdwn('; '.join(text for _, text in reasons))}")
 
-    lines.append(f"*Why this fired:* {escape_mrkdwn('; '.join(reasons))}")
+    for title, figures, prefix in (("Reported impact", alert["reported"], ""),
+                                   ("Modelled estimate", alert["modelled"], "~")):
+        shown, seen_labels = [], set()
+        for kind, label in IMPACT_LABELS:
+            if prefix and figures.get(kind, 0) < MIN_MODELLED_FIGURE:
+                continue
+            if kind in figures and label not in seen_labels:
+                shown.append(f"*{label}:* {prefix}{format_number(figures[kind])}")
+                seen_labels.add(label)
+        if shown:
+            lines.append(f"*{title}:* " + "   ".join(shown))
 
-    observed, modelled = [], []
-    seen_labels = set()
-    for kind, label in IMPACT_DISPLAY_ORDER:
-        figure = group["impacts"].get(kind)
-        if not figure or label in seen_labels:
-            continue
-        (modelled if figure["modelled"] else observed).append(
-            f"*{label}:* {format_figure(figure)}")
-        seen_labels.add(label)
-    if observed:
-        lines.append("")
-        lines.append("*Reported impact*")
-        lines.append("   ".join(observed))
-    if modelled:
-        lines.append("")
-        lines.append("*Modelled estimate* (not a reported figure)")
-        lines.append("   ".join(modelled))
-
-    severity_bits = [f"{value:g} {unit}" for unit, value in sorted(group["severities"].items())]
-    if severity_bits:
-        lines.append(f"*Severity:* {escape_mrkdwn(', '.join(severity_bits))}")
-
-    description = escape_mrkdwn(group["description"]).strip()
+    description = escape_mrkdwn(alert["description"]).strip()
     if len(description) > MAX_DESCRIPTION_CHARS:
         description = description[:MAX_DESCRIPTION_CHARS].rstrip() + "..."
     if description:
@@ -562,17 +662,14 @@ def build_slack_payload(group: dict, reasons: list, is_update: bool) -> dict:
         lines.append(description)
 
     lines.append("")
-    record_word = "record" if group["item_count"] == 1 else "records"
-    lines.append(f"*Reported by:* {escape_mrkdwn(', '.join(group['sources']))} "
-                 f"({group['item_count']} {record_word} via IFRC Montandon)")
-
-    links = [f"<{url}|{source} report>" for source, url in sorted(group["reports"].items())]
+    lines.append(f"*Sources:* {escape_mrkdwn(', '.join(alert['sources']))} (via IFRC Montandon)")
+    links = [f"<{url}|{source}>" for source, url in alert["reports"].items()]
     if links:
         lines.append(" | ".join(links))
 
-    countries_fallback = ", ".join(country_name(c) for c in group["countries"]) or "unknown"
+    countries = ", ".join(country_name(c) for c in alert["countries"]) or "unknown location"
     return {
-        "text": f"{group['hazard_label']} alert: {group['title']} ({countries_fallback})",
+        "text": f"{heading}: {alert['title']} ({countries})",
         "blocks": [
             {
                 "type": "section",
@@ -605,109 +702,172 @@ def post_to_slack(payload: dict) -> bool:
     return True
 
 
-def resolve_window() -> str:
-    now = datetime.now(timezone.utc)
+# -- Main ----------------------------------------------------------------------
 
+def resolve_window() -> tuple:
+    now = datetime.now(timezone.utc)
     start_date = os.environ.get("START_DATE", "").strip()
+    end_date = os.environ.get("END_DATE", "").strip()
     lookback = os.environ.get("LOOKBACK_DAYS", "").strip()
 
     try:
+        end = (datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+               if end_date else now)
         if start_date:
             start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
         else:
-            start = now - timedelta(days=int(lookback) if lookback else 7)
+            start = end - timedelta(days=int(lookback) if lookback else 14)
     except ValueError:
-        sys.exit(f"[error] Bad window: START_DATE={start_date!r} must be a date "
-                 f"like 2026-01-01, LOOKBACK_DAYS={lookback!r} must be a whole number")
+        sys.exit(f"[error] Bad window: START_DATE={start_date!r} and END_DATE={end_date!r} "
+                 f"must be dates like 2026-01-01, LOOKBACK_DAYS={lookback!r} a whole number")
+    return start, end
 
-    return f"{start.strftime('%Y-%m-%dT%H:%M:%SZ')}/{now.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+
+def collect(session: requests.Session, start: datetime, end: datetime) -> tuple:
+    """Find candidate records, then add corroborating records from nearby."""
+    window = f"{stac_time(start)}/{stac_time(end)}"
+
+    candidates = []
+    for collections, cql in TRIGGER_QUERIES:
+        body = {"collections": collections, "datetime": window}
+        if cql:
+            body["filter"] = cql
+        items = search(session, body, ",".join(collections))
+        print(f"[stac] {', '.join(collections)}: {len(items)} candidate items")
+        candidates.extend(parse_item(i) for i in items)
+
+    # Deduplicate overlapping searches.
+    records = {}
+
+    def keep(record):
+        key = (record["collection"], record["token"], record["episode"], record["title"],
+               str(record["impact"]))
+        records.setdefault(key, record)
+
+    def add(items, wanted=lambda r: True):
+        for r in map(parse_item, items):
+            if wanted(r):
+                keep(r)
+
+    for r in candidates:
+        keep(r)
+    seeds = group_records(candidates, {r["token"] for r in candidates})
+    print(f"[group] {len(candidates)} candidates form {len(seeds)} possible alerts")
+
+    # Fetch all GDACS episodes to find the current alert level.
+    gdacs = {r["token"] for r in candidates if r["source"] == "GDACS"}
+    gdacs_ids = sorted({r["event_id"] for r in candidates if r["source"] == "GDACS"})
+    for i in range(0, len(gdacs_ids), 50):
+        add(search(session, {"collections": ["gdacs-events", "gdacs-hazards"], "filter": {
+            "op": "in", "args": [{"property": "monty:src_event_id"}, gdacs_ids[i:i + 50]]}},
+            "gdacs episodes"), wanted=lambda r: r["token"] in gdacs)
+
+    for seed in seeds:
+        since = (seed["start"] or start) - timedelta(days=MERGE_WINDOW_DAYS)
+        period = f"{stac_time(since)}/{stac_time(end)}"
+
+        # Match long cyclone tracks to GDACS by name.
+        if seed["storms"]:
+            add(search(session, {
+                "collections": ["gdacs-events"], "datetime": period,
+                "filter": {"op": "or", "args": [
+                    {"op": "like", "args": [{"property": "title"}, f"%{name}%"]}
+                    for name in sorted(seed["storms"])]},
+            }, "storm names"))
+
+        box = seed["bbox"]
+        if not box or max(box[2] - box[0], box[3] - box[1]) > CONTEXT_MAX_SPAN_DEG:
+            continue
+        pad = CONTEXT_PADDING_DEG
+        add(search(session, {
+            "collections": CONTEXT_COLLECTIONS,
+            "bbox": [max(-180, box[0] - pad), max(-90, box[1] - pad),
+                     min(180, box[2] + pad), min(90, box[3] + pad)],
+            "datetime": period,
+        }, "context"))
+
+    print(f"[stac] {len(records)} records after adding context")
+    return list(records.values()), {r["token"] for r in candidates}
 
 
 def main() -> None:
-    window = resolve_window()
-    print(f"[run] {'DRY RUN -- ' if DRY_RUN else ''}querying Montandon over {window}")
-    print(f"[run] Endpoint: {STAC_API_URL}")
+    start, end = resolve_window()
+    mode = "SEED" if SEED_STATE else "DRY RUN" if DRY_RUN else "LIVE"
+    print(f"[run] {mode} -- querying {STAC_API_URL} over {stac_time(start)}/{stac_time(end)}")
 
     session = api_session()
+    records, candidate_tokens = collect(session, start, end)
 
-    try:
-        served = available_collections(session)
-    except Exception as e:
-        sys.exit(f"[error] Could not list Montandon collections: {e}")
-
-    wanted = [c for c in COLLECTIONS if c in served]
-    missing = [c for c in COLLECTIONS if c not in served]
-    if missing:
-        print(f"[stac] Not served by this endpoint, skipping: {', '.join(missing)}")
-
-    raw_items = []
-    for collection in wanted:
-        raw_items.extend(search_collection(session, collection, window))
-    print(f"[stac] {len(raw_items)} items across {len(wanted)} collections")
-
-    groups = group_items([parse_item(i) for i in raw_items])
-    print(f"[group] Correlated into {len(groups)} distinct events")
+    alerts = []
+    for group in group_records(records, candidate_tokens):
+        alert = summarise(group)
+        reasons = triggers(alert, end)
+        if reasons:
+            alerts.append((alert, reasons))
+    # GDACS Red, then Orange, then the rest; newest first within each.
+    alerts.sort(key=lambda a: (LEVEL_RANK.get(a[0]["level"], 0),
+                               a[0]["start"].timestamp() if a[0]["start"] else 0),
+                reverse=True)
+    print(f"[group] {len(alerts)} alerts meet the thresholds")
 
     posted = load_posted()
-    seen = index_posted(posted)
     print(f"[state] Loaded {len(posted)} previously posted alerts")
+    save = not DRY_RUN or SEED_STATE
 
-    severity_rank = {"red": 0, "orange": 1, "green": 2, "": 3}
-    groups.sort(key=lambda g: (severity_rank.get(g["alert_level"], 3),
-                               -(impact_value(g, "death") or 0),
-                               -(g["start"].timestamp() if g["start"] else 0)))
+    pending = []
+    for alert, reasons in alerts:
+        matches = find_posted(alert, posted)
+        kind = escalation(alert, matches)
+        if kind is None:
+            remember(alert, matches, posted)
+        else:
+            pending.append((alert, reasons, matches, kind))
+    skipped_count = len(alerts) - len(pending)
 
-    posted_count = skipped_count = quiet_count = error_count = 0
+    if len(pending) > MAX_PENDING_ALERTS and not SEED_STATE:
+        for alert, reasons, _, _ in pending:
+            print(f"[held] {alert['title']} -- {'; '.join(t for _, t in reasons)}")
+        message = (f"{len(pending)} new alerts and updates exceeds MAX_PENDING_ALERTS "
+                   f"({MAX_PENDING_ALERTS}); check the data or thresholds, then seed state or post manually.")
+        if DRY_RUN:
+            print(f"[warning] {message}")
+        else:
+            sys.exit(f"[error] {message} Nothing was posted.")
 
-    for group in groups:
-        reasons = triggers(group)
-        if not reasons:
-            quiet_count += 1
-            continue
+    posted_count = error_count = 0
 
-        signature = state_signature(group)
-        tokens = group_tokens(group)
-        if any(signature in seen.get(token, ()) for token in tokens):
-            skipped_count += 1
-            continue
-
-        is_update = any(token in seen for token in tokens)
-
-        if post_to_slack(build_slack_payload(group, reasons, is_update)):
-            posted.append({
-                "group_key":   group["key"],
-                "corr_ids":    group["corr_ids"],
-                "signature":   signature,
-                "title":       group["title"],
-                "hazard":      group["hazard_label"],
-                "countries":   group["countries"],
-                "alert_level": group["alert_level"],
-                "sources":     group["sources"],
-                "reasons":     reasons,
+    for alert, reasons, matches, kind in pending:
+        summary = f"{alert['title']} -- {'; '.join(t for _, t in reasons)}"
+        if SEED_STATE or post_to_slack(build_slack_payload(alert, reasons, kind == "update")):
+            record = remember(alert, matches, posted)
+            record.update({
+                "alert_level": alert["level"],
+                "reasons":     [t for _, t in reasons],
                 "posted_at":   datetime.now(timezone.utc).date().isoformat(),
             })
-            for token in tokens:
-                if token:
-                    seen.setdefault(token, set()).add(signature)
+            if SEED_STATE:
+                record["seeded"] = True
+            # Preserve earlier successes if a later post fails.
+            if save:
+                save_posted(posted)
             posted_count += 1
-            print(f"[posted] {'[update] ' if is_update else ''}{group['title']} "
-                  f"({', '.join(group['sources'])}) -- {'; '.join(reasons)}")
+            print(f"[{'seeded' if SEED_STATE else 'posted'}] "
+                  f"{'[update] ' if kind == 'update' else ''}{summary}")
+            if not SEED_STATE:
+                time.sleep(1)  # Respect Slack's one-message-per-second limit.
         else:
             error_count += 1
-            print(f"[error] Failed to post {group['key']} -- will retry on the next run",
+            print(f"[error] Failed to post {alert['title']} -- will retry on the next run",
                   file=sys.stderr)
 
-        time.sleep(1)  # Respect Slack's one-message-per-second limit.
-
-    if DRY_RUN:
-        print(f"\n[done] DRY RUN -- would post: {posted_count} | "
-              f"already seen: {skipped_count} | below threshold: {quiet_count} "
-              f"(state not saved)")
+    counts = f"already posted: {skipped_count}"
+    if not save:
+        print(f"\n[done] DRY RUN -- would post: {posted_count} | {counts} (state not saved)")
         return
 
     save_posted(posted)
-    print(f"\n[done] Posted: {posted_count} | Already seen: {skipped_count} | "
-          f"Below threshold: {quiet_count} | Errors: {error_count}")
+    print(f"\n[done] {'Seeded' if SEED_STATE else 'Posted'}: {posted_count} | {counts} | "
+          f"errors: {error_count} | {len(posted)} alerts in {STATE_FILE}")
 
     if error_count:
         sys.exit(f"[error] {error_count} alert(s) failed to post -- will retry next run")
