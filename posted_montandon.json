@@ -1,0 +1,252 @@
+[
+  {
+    "tokens": [
+      "Copernicus EMS:GH01:20261009-PAN-884302-GH0101-1-GCDB",
+      "GDACS:GH01:1570339",
+      "GDACS:GH01:1570346",
+      "GDACS:GH01:1570350",
+      "GDACS:GH01:1570351",
+      "GDACS:GH01:1570352",
+      "GDACS:GH01:1570355",
+      "GDACS:GH01:1570357",
+      "GDACS:GH01:1570360",
+      "GDACS:GH01:1570361",
+      "GDACS:GH01:1570369",
+      "GDACS:GH01:1570370",
+      "GDACS:GH01:1570372",
+      "GDACS:GH01:1570374",
+      "GDACS:GH01:1570379",
+      "GDACS:GH01:1570380",
+      "GDACS:GH01:1570381",
+      "GDACS:GH01:1570384",
+      "GDACS:GH01:1570385",
+      "GDACS:GH01:1570394",
+      "GDACS:GH01:1570402",
+      "GDACS:GH01:1570403",
+      "GDACS:GH01:1570405",
+      "GDACS:GH01:1570413",
+      "GDACS:GH01:1570416",
+      "GDACS:GH01:1570422",
+      "GDACS:GH01:1570423",
+      "GDACS:GH01:1570429",
+      "GDACS:GH01:1570446",
+      "GDACS:GH01:1570453",
+      "GDACS:GH01:1570455",
+      "GDACS:GH01:1570466",
+      "GDACS:GH01:1570467",
+      "GDACS:GH01:1570471",
+      "GDACS:GH01:1570484",
+      "GDACS:GH01:1570487",
+      "GDACS:GH01:1570488",
+      "GDACS:GH01:1570491",
+      "GDACS:GH01:1570499",
+      "GDACS:GH01:1570500",
+      "GDACS:GH01:1570517",
+      "GDACS:GH01:1570549",
+      "GDACS:GH01:1570586",
+      "GDACS:GH01:1570587",
+      "GDACS:GH01:1570595",
+      "GDACS:GH01:1570602",
+      "GDACS:GH01:1570607",
+      "GDACS:GH01:1570669",
+      "GDACS:GH01:1570690",
+      "GDACS:GH01:1570859",
+      "GDACS:GH01:1570891",
+      "GDACS:GH01:1570928",
+      "GDACS:GH01:1570961",
+      "GDACS:GH01:1570996",
+      "GDACS:GH01:1571060",
+      "GLIDE:GH01:2026-000188",
+      "USGS:GH01:us6000u18k",
+      "USGS:GH01:us6000u18t",
+      "USGS:GH01:us6000u18x",
+      "USGS:GH01:us6000u194",
+      "USGS:GH01:us6000u195",
+      "USGS:GH01:us6000u197",
+      "USGS:GH01:us6000u198",
+      "USGS:GH01:us6000u19c",
+      "USGS:GH01:us6000u19e",
+      "USGS:GH01:us6000u19h",
+      "USGS:GH01:us6000u19i",
+      "USGS:GH01:us6000u19s",
+      "USGS:GH01:us6000u19t",
+      "USGS:GH01:us6000u19w",
+      "USGS:GH01:us6000u1a5",
+      "USGS:GH01:us6000u1a6",
+      "USGS:GH01:us6000u1a9",
+      "USGS:GH01:us6000u1aa",
+      "USGS:GH01:us6000u1ai",
+      "USGS:GH01:us6000u1ax",
+      "USGS:GH01:us6000u1ay",
+      "USGS:GH01:us6000u1az",
+      "USGS:GH01:us6000u1b3",
+      "USGS:GH01:us6000u1b4",
+      "USGS:GH01:us6000u1b5",
+      "USGS:GH01:us6000u1bg",
+      "USGS:GH01:us6000u1bj",
+      "USGS:GH01:us6000u1bl",
+      "USGS:GH01:us6000u1bp",
+      "USGS:GH01:us6000u1bu",
+      "USGS:GH01:us6000u1bw",
+      "USGS:GH01:us6000u1cb",
+      "USGS:GH01:us6000u1cf",
+      "USGS:GH01:us6000u1ck",
+      "USGS:GH01:us6000u1cs",
+      "USGS:GH01:us6000u1cz",
+      "USGS:GH01:us6000u1d1",
+      "USGS:GH01:us6000u1d2",
+      "USGS:GH01:us6000u1d5",
+      "USGS:GH01:us6000u1d7",
+      "USGS:GH01:us6000u1db",
+      "USGS:GH01:us6000u1dc",
+      "USGS:GH01:us6000u1df",
+      "USGS:GH01:us6000u1dx",
+      "USGS:GH01:us6000u1e5",
+      "USGS:GH01:us6000u1em",
+      "USGS:GH01:us6000u1ev",
+      "USGS:GH01:us6000u1ex",
+      "USGS:GH01:us6000u1f3",
+      "USGS:GH01:us6000u1f6",
+      "USGS:GH01:us6000u1fj",
+      "USGS:GH01:us6000u1fk",
+      "USGS:GH01:us6000u1hj",
+      "USGS:GH01:us6000u1hw",
+      "USGS:GH01:us6000u1i9",
+      "USGS:GH01:us6000u1lf",
+      "USGS:GH01:us6000u1lp",
+      "USGS:GH01:us6000u1me",
+      "USGS:GH01:us6000u1my",
+      "USGS:GH01:us6000u1mz"
+    ],
+    "level_rank": 1,
+    "death_bucket": -1,
+    "title": "Earthquake in Panama",
+    "countries": [
+      "COL",
+      "CRI",
+      "PAN"
+    ],
+    "alert_level": "orange",
+    "reasons": [
+      "GDACS Orange alert",
+      "M7.7 earthquake",
+      "Copernicus EMS mapping activation (EMSR934)"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  },
+  {
+    "tokens": [
+      "GDACS:GH02:1000151",
+      "GLIDE:GH02:2026-000187"
+    ],
+    "level_rank": 1,
+    "death_bucket": -1,
+    "title": "Eruption Taal",
+    "countries": [
+      "PHL"
+    ],
+    "alert_level": "orange",
+    "reasons": [
+      "GDACS Orange alert"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  },
+  {
+    "tokens": [
+      "GDACS:GH01:1569605",
+      "GDACS:GH01:1570077",
+      "GDACS:GH01:1570301",
+      "GDACS:GH01:1570740",
+      "GLIDE:GH01:2026-000186",
+      "USGS:GH01:us6000tznh",
+      "USGS:GH01:us6000u0xi",
+      "USGS:GH01:us6000u15x",
+      "USGS:GH01:us6000u1il"
+    ],
+    "level_rank": 1,
+    "death_bucket": -1,
+    "title": "Earthquake in Vanuatu",
+    "countries": [
+      "VUT"
+    ],
+    "alert_level": "orange",
+    "reasons": [
+      "GDACS Orange alert"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  },
+  {
+    "tokens": [
+      "IBTrACS:MH03:2026278N22264"
+    ],
+    "level_rank": 0,
+    "death_bucket": -1,
+    "title": "Tropical Cyclone ISAIAS",
+    "countries": [
+      "USA"
+    ],
+    "alert_level": "",
+    "reasons": [
+      "100 kt winds"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  },
+  {
+    "tokens": [
+      "Copernicus EMS:MH06:20261001-GRC-1126025-MH0603-1-GCDB"
+    ],
+    "level_rank": 0,
+    "death_bucket": -1,
+    "title": "Flood in Crete, Greece",
+    "countries": [
+      "GRC"
+    ],
+    "alert_level": "",
+    "reasons": [
+      "Copernicus EMS mapping activation (EMSR933)"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  },
+  {
+    "tokens": [
+      "IBTrACS:MH03:2026268N09267",
+      "IDMC:MH03:81190"
+    ],
+    "level_rank": 0,
+    "death_bucket": -1,
+    "title": "Mexico: Tropical Storm Rachel - Colima (Manzanillo) - 29/09/2026",
+    "countries": [
+      "MEX"
+    ],
+    "alert_level": "",
+    "reasons": [
+      "100 kt winds"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  },
+  {
+    "tokens": [
+      "EM-DAT:MH06:2026-0624-THA",
+      "GDACS:MH06:1104169",
+      "IDMC:MH06:80928"
+    ],
+    "level_rank": 0,
+    "death_bucket": 1,
+    "title": "Flood in Thailand",
+    "countries": [
+      "THA"
+    ],
+    "alert_level": "green",
+    "reasons": [
+      "3,500,000 affected reported"
+    ],
+    "posted_at": "2026-10-13",
+    "seeded": true
+  }
+]
