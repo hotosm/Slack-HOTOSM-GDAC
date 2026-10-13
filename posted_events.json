@@ -778,5 +778,15 @@
     "todate": "2026-10-09T17:56:06",
     "datemodified": "2026-10-10T00:01:48",
     "posted_at": "2026-10-10"
+  },
+  {
+    "event_id": "1000152",
+    "alert_level": "Orange",
+    "event_name": "Eruption  Kanlaon",
+    "country": "Philippines",
+    "fromdate": "2026-10-10T05:58:00",
+    "todate": "2026-10-10T05:58:00",
+    "datemodified": "2026-10-12T06:02:40",
+    "posted_at": "2026-10-13"
   }
 ]
