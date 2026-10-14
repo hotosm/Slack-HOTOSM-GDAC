@@ -788,5 +788,15 @@
     "todate": "2026-10-10T05:58:00",
     "datemodified": "2026-10-12T06:02:40",
     "posted_at": "2026-10-13"
+  },
+  {
+    "event_id": "1001337",
+    "alert_level": "Orange",
+    "event_name": "Tropical Cyclone TRUDY-26",
+    "country": "Mexico",
+    "fromdate": "2026-10-13T15:00:00",
+    "todate": "2026-10-13T21:00:00",
+    "datemodified": "2026-10-13T20:48:32",
+    "posted_at": "2026-10-14"
   }
 ]
