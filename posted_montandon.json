@@ -115,6 +115,7 @@
   },
   {
     "tokens": [
+      "Copernicus EMS:GH01:20261009-PAN-884301-GH0101-1-GCDB",
       "Copernicus EMS:GH01:20261009-PAN-884302-GH0101-1-GCDB",
       "GDACS:GH01:1570339",
       "GDACS:GH01:1570346",
@@ -230,7 +231,12 @@
       "USGS:GH01:us6000u1lp",
       "USGS:GH01:us6000u1me",
       "USGS:GH01:us6000u1my",
-      "USGS:GH01:us6000u1mz"
+      "USGS:GH01:us6000u1mz",
+      "USGS:GH01:us6000u1ny",
+      "USGS:GH01:us6000u1pf",
+      "USGS:GH01:us6000u1qd",
+      "USGS:GH01:us6000u1re",
+      "USGS:GH01:us6000u1rx"
     ],
     "level_rank": 1,
     "death_bucket": -1,
@@ -247,5 +253,23 @@
       "Copernicus EMS mapping activation (EMSR934)"
     ],
     "posted_at": "2026-10-13"
+  },
+  {
+    "tokens": [
+      "GDACS:MH03:1001338",
+      "IBTrACS:MH03:2026285N16151",
+      "IBTrACS:MH03:2026288N10161"
+    ],
+    "level_rank": 2,
+    "death_bucket": -1,
+    "title": "Tropical Cyclone CHAMPI-26",
+    "countries": [
+      "GUM"
+    ],
+    "alert_level": "red",
+    "reasons": [
+      "GDACS Red alert"
+    ],
+    "posted_at": "2026-10-17"
   }
 ]
