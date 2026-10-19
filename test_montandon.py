@@ -43,6 +43,21 @@ class Grouping(unittest.TestCase):
         groups = m.group_records([gdacs, usgs], {"GDACS:GH01:1", "USGS:GH01:us1"})
         self.assertEqual(len(groups), 1)
 
+    def test_separate_gdacs_alerts_do_not_merge(self):
+        # Taal and Kanlaon: two Orange eruptions about 460 km and two days apart.
+        taal = record("GDACS:GH02:151", family="GH02", source="GDACS", level="orange",
+                      countries=["PHL"], days_ago=3)
+        kanlaon = record("GDACS:GH02:152", family="GH02", source="GDACS", level="orange",
+                         countries=["PHL"], lon=3.0, days_ago=1)
+        groups = m.group_records([taal, kanlaon], {taal["token"], kanlaon["token"]})
+        self.assertEqual(len(groups), 2)
+
+    def test_green_gdacs_aftershocks_join_the_main_shock(self):
+        main = record("GDACS:GH01:1", source="GDACS", level="orange", magnitude=7.7)
+        after = record("GDACS:GH01:2", source="GDACS", level="green", lon=0.5)
+        groups = m.group_records([main, after], {main["token"], after["token"]})
+        self.assertEqual(len(groups), 1)
+
     def test_no_chaining_through_an_intermediate_record(self):
         # B is within 500 km of both A and C, but A and C are 830 km apart.
         a = record("USGS:GH01:a", lon=0.0, magnitude=7.5)
@@ -98,9 +113,11 @@ class Triggers(unittest.TestCase):
         self.assertEqual(self.keys(track), ["wind"])
         self.assertEqual(self.keys(track, gdacs), [])
 
-    def test_gdacs_orange_drought_does_not_alert(self):
-        self.assertEqual(self.keys(record("GDACS:MH04:1", family="MH04", source="GDACS",
-                                          level="orange")), [])
+    def test_gdacs_orange_alerts_for_every_gdacs_hazard(self):
+        for family in ("GH01", "GH02", "MH03", "MH04", "MH06", "EN02"):
+            self.assertEqual(self.keys(record(f"GDACS:{family}:1", family=family,
+                                              source="GDACS", level="orange")),
+                             ["gdacs_orange"], family)
 
     def test_modelled_deaths_do_not_alert(self):
         self.assertEqual(self.keys(record("USGS:GH01:1", impact=impact("death", 500, True))), [])
@@ -139,6 +156,33 @@ class State(unittest.TestCase):
         later = alert_for(b)
         self.assertIsNone(m.escalation(later, m.find_posted(later, posted)))
         self.assertEqual(len(posted), 1)
+
+    def test_green_gdacs_event_that_turns_orange_is_posted(self):
+        main = record("GDACS:GH01:1", source="GDACS", level="orange")
+        after = record("GDACS:GH01:2", source="GDACS", level="green", lon=0.5)
+        posted = []
+        m.remember(alert_for(main, after), [], posted)
+
+        orange = alert_for(dict(after, gdacs_level="orange"))
+        self.assertEqual(m.escalation(orange, m.find_posted(orange, posted)), "new")
+
+    def test_alerts_unseen_for_the_retention_period_expire(self):
+        old = (NOW - timedelta(days=m.STATE_RETENTION_DAYS + 1)).date().isoformat()
+        recent = (NOW - timedelta(days=5)).date().isoformat()
+        records = [{"tokens": ["a"], "last_seen": old},
+                   {"tokens": ["b"], "last_seen": recent},
+                   {"tokens": ["c"], "posted_at": recent}]
+        self.assertEqual([r["tokens"] for r in m.prune(records, NOW)], [["b"], ["c"]])
+
+    def test_state_round_trips_one_alert_per_line(self):
+        records = [{"tokens": ["GDACS:GH01:1"], "title": "Séisme"}, {"tokens": ["b"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "state.json")
+            with mock.patch.multiple(m, STATE_FILE=path, DRY_RUN=True):
+                m.save_posted(records)
+                self.assertEqual(m.load_posted(), records)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(len(f.read().splitlines()), 4)
 
     def test_missing_or_corrupt_state_stops_a_live_run(self):
         with tempfile.TemporaryDirectory() as tmp:

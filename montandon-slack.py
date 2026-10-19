@@ -29,13 +29,16 @@ SEED_STATE = os.environ.get("SEED_STATE", "").lower() == "true"
 # More new alerts and updates than this in one run suggests bad data; post nothing.
 MAX_PENDING_ALERTS = 10
 
+# Forget alerts unseen for this long. Each run refreshes alerts still in the data.
+STATE_RETENTION_DAYS = 90
+
 PAGE_SIZE = 200
 MAX_ITEMS_PER_QUERY = 5000
 
 # -- Alert thresholds ----------------------------------------------------------
 
-# GDACS Orange triggers only for these families.
-GDACS_ORANGE_FAMILIES = {"GH01", "GH02", "MH03", "MH06", "MH07"}
+# GDACS Orange triggers only for these families: the hazards GDACS alerts on.
+GDACS_ORANGE_FAMILIES = {"GH01", "GH02", "MH03", "MH04", "MH06", "MH07", "EN02"}
 
 MAGNITUDE_ANYWHERE = 7.0
 MAGNITUDE_ON_LAND = 6.5         # Requires a named country, not open ocean.
@@ -240,13 +243,24 @@ def load_posted() -> list:
 
 
 def save_posted(records: list) -> None:
+    """One alert per line keeps the file short and its diffs readable."""
+    lines = [json.dumps(r, ensure_ascii=False) for r in records]
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(records, f, indent=2, ensure_ascii=False)
+        f.write("[\n" + ",\n".join(lines) + "\n]\n")
+
+
+def prune(records: list, now: datetime) -> list:
+    """Drop alerts no run has seen within STATE_RETENTION_DAYS."""
+    cutoff = (now - timedelta(days=STATE_RETENTION_DAYS)).date().isoformat()
+    return [r for r in records if (r.get("last_seen") or r.get("posted_at") or cutoff) >= cutoff]
 
 
 def find_posted(alert: dict, posted: list) -> list:
-    tokens = set(alert["tokens"])
-    return [record for record in posted if tokens & set(record["tokens"])]
+    """Records sharing a token, unless both name different GDACS Orange/Red events."""
+    tokens, gdacs = set(alert["tokens"]), set(alert["gdacs_alerts"])
+    return [record for record in posted if tokens & set(record["tokens"])
+            and not (gdacs and record.get("gdacs_alerts")
+                     and not gdacs & set(record["gdacs_alerts"]))]
 
 
 def remember(alert: dict, matches: list, posted: list) -> dict:
@@ -254,16 +268,18 @@ def remember(alert: dict, matches: list, posted: list) -> dict:
     if matches:
         record = matches[0]
     else:
-        record = {"tokens": [], "level_rank": 0, "death_bucket": -1}
+        record = {"tokens": [], "gdacs_alerts": [], "level_rank": 0, "death_bucket": -1}
         posted.append(record)
     record["tokens"] = sorted(set(record["tokens"]).union(
         alert["tokens"], *(m["tokens"] for m in matches)))
+    record["gdacs_alerts"] = sorted(set(record.get("gdacs_alerts", [])).union(
+        alert["gdacs_alerts"], *(m.get("gdacs_alerts", []) for m in matches)))
     record["level_rank"] = max([LEVEL_RANK.get(alert["level"], 0)]
                                + [m["level_rank"] for m in matches])
     record["death_bucket"] = max([death_bucket(alert["reported"].get("death", 0))]
                                  + [m["death_bucket"] for m in matches])
     record["title"] = record.get("title") or alert["title"]
-    record["countries"] = alert["countries"]
+    record["last_seen"] = datetime.now(timezone.utc).date().isoformat()
     return record
 
 
@@ -440,6 +456,8 @@ def new_group(records: list) -> dict:
         "family": next((r["family"] for r in records if r["family"] != "UNKNOWN"), "UNKNOWN"),
         "countries": set().union(*(r["countries"] for r in records)),
         "storms": {r["storm"] for r in records if r["storm"]},
+        "gdacs_alerts": {r["token"] for r in records
+                         if r["source"] == "GDACS" and r["gdacs_level"] in LEVEL_RANK},
         "bbox": [min(b[0] for b in boxes), min(b[1] for b in boxes),
                  max(b[2] for b in boxes), max(b[3] for b in boxes)] if boxes else None,
         "start": min((r["start"] for r in records if r["start"]), default=None),
@@ -453,6 +471,9 @@ def same_disaster(a: dict, b: dict) -> bool:
         return False
     # Cyclone tracks are long and overlap, so names must agree when known.
     if a["storms"] and b["storms"] and not (a["storms"] & b["storms"]):
+        return False
+    # Separate GDACS Orange or Red events are separate alerts, e.g. nearby eruptions.
+    if a["gdacs_alerts"] and b["gdacs_alerts"] and not (a["gdacs_alerts"] & b["gdacs_alerts"]):
         return False
     if a["countries"] and b["countries"] and not (a["countries"] & b["countries"]):
         return False
@@ -540,6 +561,8 @@ def summarise(group: dict) -> dict:
 
     return {
         "tokens": tokens,
+        "gdacs_alerts": sorted({r["token"] for r in records
+                                if r["source"] == "GDACS" and r["gdacs_level"] in LEVEL_RANK}),
         "title": lead["title"] or "Unnamed event",
         "family": group["family"],
         "countries": sorted(group["countries"]),
@@ -810,8 +833,10 @@ def main() -> None:
                 reverse=True)
     print(f"[group] {len(alerts)} alerts meet the thresholds")
 
-    posted = load_posted()
-    print(f"[state] Loaded {len(posted)} previously posted alerts")
+    loaded = load_posted()
+    posted = prune(loaded, end)
+    print(f"[state] Loaded {len(loaded)} previously posted alerts, "
+          f"{len(loaded) - len(posted)} expired")
     save = not DRY_RUN or SEED_STATE
 
     pending = []
@@ -840,13 +865,7 @@ def main() -> None:
         summary = f"{alert['title']} -- {'; '.join(t for _, t in reasons)}"
         if SEED_STATE or post_to_slack(build_slack_payload(alert, reasons, kind == "update")):
             record = remember(alert, matches, posted)
-            record.update({
-                "alert_level": alert["level"],
-                "reasons":     [t for _, t in reasons],
-                "posted_at":   datetime.now(timezone.utc).date().isoformat(),
-            })
-            if SEED_STATE:
-                record["seeded"] = True
+            record["posted_at"] = record["last_seen"]
             # Preserve earlier successes if a later post fails.
             if save:
                 save_posted(posted)
