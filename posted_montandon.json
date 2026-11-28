@@ -39,6 +39,6 @@
 {"tokens": ["GDACS:MH04:1023877"], "gdacs_alerts": ["GDACS:MH04:1023877"], "level_rank": 1, "death_bucket": -1, "title": "Drought in Aruba, , Brazil, Colombia, Costa Rica, , French Guiana, Guyana, Panama, Suriname, Venezuela", "last_seen": "2026-11-26", "posted_at": "2026-11-12"},
 {"tokens": ["GDACS:MH03:1001351", "IBTrACS:MH03:2026321N11087"], "gdacs_alerts": ["GDACS:MH03:1001351"], "level_rank": 1, "death_bucket": -1, "title": "Tropical Cyclone AKVAN-26", "last_seen": "2026-11-20", "posted_at": "2026-11-17"},
 {"tokens": ["Copernicus EMS:MH06:20261112-ECU-790703-MH0604-1-GCDB"], "gdacs_alerts": [], "level_rank": 0, "death_bucket": -1, "title": "Flood in Ecuador", "last_seen": "2026-11-26", "posted_at": "2026-11-17"},
-{"tokens": ["Copernicus EMS:GH03:20261118-PRT-1172663-GH0300-1-GCDB"], "gdacs_alerts": [], "level_rank": 0, "death_bucket": -1, "title": "Mass Movement in Manteigas, Portugal", "last_seen": "2026-11-27", "posted_at": "2026-11-21"},
-{"tokens": ["Copernicus EMS:CH02:20261125-ESP-1163706-CH0203-1-GCDB"], "gdacs_alerts": [], "level_rank": 0, "death_bucket": -1, "title": "Oil Spill in the Balearic Islands, Spain", "last_seen": "2026-11-27", "posted_at": "2026-11-27"}
+{"tokens": ["Copernicus EMS:GH03:20261118-PRT-1172663-GH0300-1-GCDB"], "gdacs_alerts": [], "level_rank": 0, "death_bucket": -1, "title": "Mass Movement in Manteigas, Portugal", "last_seen": "2026-11-28", "posted_at": "2026-11-21"},
+{"tokens": ["Copernicus EMS:CH02:20261125-ESP-1163706-CH0203-1-GCDB"], "gdacs_alerts": [], "level_rank": 0, "death_bucket": -1, "title": "Oil Spill in the Balearic Islands, Spain", "last_seen": "2026-11-28", "posted_at": "2026-11-27"}
 ]
